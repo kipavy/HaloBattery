@@ -62,6 +62,14 @@ ENABLE_FEATURE = 0x06
 
 # The enhanced report id: Bluetooth -> 0x01, USB -> 0x04 (SDL_hidapi_8bitdo.c).
 ENHANCED_REPORT = {True: 0x01, False: 0x04}
+# The Pro 3 keeps one product id on both transports and sends the USB id 0x04 over
+# Bluetooth too (seen on hardware: a Pro 3 over Bluetooth switched by Steam streamed
+# 04 0f 80 7f 7f 80 ... with the level in byte 14, and no report 0x01).
+ENHANCED_REPORT_BY_PID = {0x6009: 0x04}
+
+
+def enhanced_report(pid: int, bluetooth: bool) -> int:
+    return ENHANCED_REPORT_BY_PID.get(pid, ENHANCED_REPORT[bluetooth])
 BATTERY_BYTE = 14
 
 # Bluetooth HID paths carry this service GUID and the "VID&" spelling; USB paths "VID_".
@@ -110,7 +118,7 @@ class EightBitDoProvider(Provider):
         s = s.lower()
         return "vid&" in s or _BT_HID_GUID in s
 
-    def _read(self, path, bluetooth: bool, window: float) -> Optional[Tuple[int, bool]]:
+    def _read(self, path, rid: int, window: float) -> Optional[Tuple[int, bool]]:
         """-> (level, charging) from an enhanced report, or None. Listens first; in full
         mode, when nothing carried a level, switches the controller and listens again."""
         dev = hid.device()
@@ -125,10 +133,10 @@ class EightBitDoProvider(Provider):
             except Exception:
                 pass
             if not self.switch:
-                return self._listen(dev, bluetooth, window)
+                return self._listen(dev, rid, window)
             # Half the window each way: a controller already switched (by Steam, or by
             # an earlier poll) answers at once, so the switch is only sent when needed.
-            res = self._listen(dev, bluetooth, window / 2, quiet=True)
+            res = self._listen(dev, rid, window / 2, quiet=True)
             if res is not None:
                 return res
             try:
@@ -137,18 +145,17 @@ class EightBitDoProvider(Provider):
                                   f"(switches to the enhanced report)")
             except (OSError, ValueError) as e:
                 self._diag.append(f"    feature {ENABLE_FEATURE:#04x}: {e}")
-            return self._listen(dev, bluetooth, window / 2)
+            return self._listen(dev, rid, window / 2)
         finally:
             try:
                 dev.close()
             except Exception:
                 pass
 
-    def _listen(self, dev, bluetooth: bool, window: float,
+    def _listen(self, dev, rid: int, window: float,
                 quiet: bool = False) -> Optional[Tuple[int, bool]]:
         """Read only. `quiet` leaves the "no level" lines out of the diagnostics (the
         first listen of full mode, which is followed by the switch)."""
-        rid = ENHANCED_REPORT[bluetooth]
         seen: Dict[int, List[int]] = {}       # report id -> the first report of that id
         count = 0
         deadline = time.time() + window
@@ -213,7 +220,7 @@ class EightBitDoProvider(Provider):
                 if left <= 0:
                     self._diag.append("  out of time for this controller")
                     break
-                res = self._read(d["path"], bluetooth, min(WINDOW, left))
+                res = self._read(d["path"], enhanced_report(pid, bluetooth), min(WINDOW, left))
                 if res is not None:
                     break
             key = f"8bitdo:{pid:04x}:{serial}"

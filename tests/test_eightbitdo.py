@@ -186,6 +186,13 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual((out[0].level, out[0].charging), (90, True))
         self.assertEqual(out[0].via, "")
 
+    def test_pro3_over_bluetooth_uses_report_0x04(self):
+        # the Pro 3 (2dc8:6009) sends the USB enhanced id over Bluetooth too
+        path = BT_PATH.replace(b"pid_6006", b"pid_6009")
+        out = self.poll([entry(path, pid=0x6009)], {path: FakePad([enhanced(0x04, 0x14)])})
+        self.assertEqual((out[0].level, out[0].via), (20, "bluetooth"))
+        self.assertEqual(out[0].name, "8BitDo Pro 3")
+
     def test_unknown_pid_is_skipped(self):
         out = self.poll([entry(BT_PATH, pid=0x6012)], {BT_PATH: FakePad([enhanced()])})
         self.assertEqual(out, [])
