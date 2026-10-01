@@ -12,10 +12,13 @@ report, the one SDL (and so Steam) switches on:
 Switching is NOT harmless (issue #101): the reporter tested it on a Pro 2 over
 Bluetooth and after Steam had switched the controller, DirectInput games saw no
 input until the controller was turned off. The same thing happens with PlayStation
-controllers (#96). So this provider never sends the feature report. It only
-listens: when Steam or a game has already switched the controller, the level is
-read from the enhanced report; otherwise the icon shows the controller without a
-level.
+controllers (#96). So by default this provider never sends the feature report. It
+only listens: when Steam or a game has already switched the controller, the level
+is read from the enhanced report; otherwise the icon shows the controller without a
+level. The switch is sent only when the user turns on "8BitDo full mode" in
+Preferences (`switch`), exactly like "PlayStation full mode": it is read once when
+nothing carrying a level arrived, and the controller then streams the enhanced
+report until it is turned off, so later polls only listen again.
 
 Telling the two reports apart: over Bluetooth the controller's ordinary report
 may carry the same id 0x01, and on Windows hidapi pads every report with zeros to
@@ -53,6 +56,10 @@ KNOWN = {
     0x6009: "8BitDo Pro 3",
 }
 
+# Reading this feature report switches the controller to the enhanced report
+# (SDL_8BITDO_FEATURE_REPORTID_ENABLE_SDL_REPORTID). Sent only in full mode.
+ENABLE_FEATURE = 0x06
+
 # The enhanced report id: Bluetooth -> 0x01, USB -> 0x04 (SDL_hidapi_8bitdo.c).
 ENHANCED_REPORT = {True: 0x01, False: 0x04}
 BATTERY_BYTE = 14
@@ -71,7 +78,8 @@ BUDGET = 1.0
 # rather than spin through the whole window.
 MAX_REPORTS = 16
 
-NOT_SWITCHED = "level shown only while Steam or a game uses the controller"
+NOT_SWITCHED = ("level shown only while Steam or a game uses the controller "
+                "(or turn on 8BitDo full mode)")
 
 
 def parse_battery(byte: int) -> Optional[Tuple[int, bool]]:
@@ -92,6 +100,9 @@ class EightBitDoProvider(Provider):
 
     def __init__(self):
         self._diag: List[str] = []
+        # False (default): the controller is never switched to its enhanced report, see
+        # the module docstring. Set by the app from Preferences before each poll.
+        self.switch = False
 
     @staticmethod
     def _is_bluetooth(path) -> bool:
@@ -100,7 +111,8 @@ class EightBitDoProvider(Provider):
         return "vid&" in s or _BT_HID_GUID in s
 
     def _read(self, path, bluetooth: bool, window: float) -> Optional[Tuple[int, bool]]:
-        """Listen only. -> (level, charging) from an enhanced report, or None."""
+        """-> (level, charging) from an enhanced report, or None. Listens first; in full
+        mode, when nothing carried a level, switches the controller and listens again."""
         dev = hid.device()
         try:
             dev.open_path(path)
@@ -112,39 +124,60 @@ class EightBitDoProvider(Provider):
                 dev.set_nonblocking(True)
             except Exception:
                 pass
-            rid = ENHANCED_REPORT[bluetooth]
-            seen: Dict[int, List[int]] = {}       # report id -> the first report of that id
-            count = 0
-            deadline = time.time() + window
-            while time.time() < deadline and count < MAX_REPORTS:
-                try:
-                    data = dev.read(64)
-                except (OSError, ValueError) as e:
-                    self._diag.append(f"    read: {e}")
-                    break
-                if not data:
-                    time.sleep(0.005)
-                    continue
-                seen.setdefault(data[0], list(data))
-                count += 1
-                if data[0] != rid or len(data) <= BATTERY_BYTE:
-                    continue
-                res = parse_battery(data[BATTERY_BYTE])
-                if res is not None:
-                    self._diag.append(f"    report {data[0]:#04x} len={len(data)}: {hexdump(data, 32)}")
-                    return res
-            if not seen:
-                self._diag.append(f"    nothing received in {window:.1f} s: ordinary mode "
-                                  f"(not switched by Steam or a game), see #101")
-            for r, data in seen.items():
-                self._diag.append(f"    report {r:#04x} len={len(data)}, no level in byte "
-                                  f"{BATTERY_BYTE}: {hexdump(data, 32)}")
-            return None
+            if not self.switch:
+                return self._listen(dev, bluetooth, window)
+            # Half the window each way: a controller already switched (by Steam, or by
+            # an earlier poll) answers at once, so the switch is only sent when needed.
+            res = self._listen(dev, bluetooth, window / 2, quiet=True)
+            if res is not None:
+                return res
+            try:
+                dev.get_feature_report(ENABLE_FEATURE, 64)
+                self._diag.append(f"    full mode: sent feature {ENABLE_FEATURE:#04x} "
+                                  f"(switches to the enhanced report)")
+            except (OSError, ValueError) as e:
+                self._diag.append(f"    feature {ENABLE_FEATURE:#04x}: {e}")
+            return self._listen(dev, bluetooth, window / 2)
         finally:
             try:
                 dev.close()
             except Exception:
                 pass
+
+    def _listen(self, dev, bluetooth: bool, window: float,
+                quiet: bool = False) -> Optional[Tuple[int, bool]]:
+        """Read only. `quiet` leaves the "no level" lines out of the diagnostics (the
+        first listen of full mode, which is followed by the switch)."""
+        rid = ENHANCED_REPORT[bluetooth]
+        seen: Dict[int, List[int]] = {}       # report id -> the first report of that id
+        count = 0
+        deadline = time.time() + window
+        while time.time() < deadline and count < MAX_REPORTS:
+            try:
+                data = dev.read(64)
+            except (OSError, ValueError) as e:
+                self._diag.append(f"    read: {e}")
+                break
+            if not data:
+                time.sleep(0.005)
+                continue
+            seen.setdefault(data[0], list(data))
+            count += 1
+            if data[0] != rid or len(data) <= BATTERY_BYTE:
+                continue
+            res = parse_battery(data[BATTERY_BYTE])
+            if res is not None:
+                self._diag.append(f"    report {data[0]:#04x} len={len(data)}: {hexdump(data, 32)}")
+                return res
+        if quiet:
+            return None
+        if not seen:
+            self._diag.append(f"    nothing received in {window:.1f} s: ordinary mode "
+                              f"(not switched by Steam or a game), see #101")
+        for r, data in seen.items():
+            self._diag.append(f"    report {r:#04x} len={len(data)}, no level in byte "
+                              f"{BATTERY_BYTE}: {hexdump(data, 32)}")
+        return None
 
     def poll(self) -> List[DeviceStatus]:
         self._diag = []
@@ -169,7 +202,8 @@ class EightBitDoProvider(Provider):
             name = KNOWN[pid]
             self._diag.append(f"[8BitDo] {name} pid={pid:04x} "
                               f"{'Bluetooth' if bluetooth else 'USB'} interfaces={len(ifaces)} "
-                              f"(listen only, the controller is never switched)")
+                              + ("(full mode: switched when needed)" if self.switch
+                                 else "(listen only, the controller is never switched)"))
             res = None
             budget_end = time.time() + BUDGET
             for d in sorted(ifaces, key=_gamepad_first):

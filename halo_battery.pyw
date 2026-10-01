@@ -13,7 +13,8 @@ Supported:
   * Xbox-compatible controllers (Windows.Gaming.Input / XInput)
   * PlayStation controllers (DualShock 4, DualSense): directly over USB/HID
   * 8BitDo controllers in D-input mode (Pro 2, Pro 3, SN30 / SF30 Pro), while Steam
-    or a game has them in the enhanced mode (never switched by the app, #101)
+    or a game has them in the enhanced mode (switched by the app only with
+    "8BitDo full mode" on, #101)
   * Nintendo Switch Pro Controller and Joy-Con over Bluetooth
   * Bluetooth devices whose battery level Windows knows (enabled from the menu)
 
@@ -104,6 +105,9 @@ DEFAULTS = {
     # battery. Off by default: that mode stays on until the controller is turned off and
     # games that use DirectInput stop seeing the controller (#96)
     "playstation_full_mode": False,
+    # 8BitDo controllers in D-input mode: the same trade-off as above (#101). Off by
+    # default: the controller shows its level only while Steam or a game has switched it
+    "eightbitdo_full_mode": False,
     "disabled_providers": [],     # provider names turned off in Preferences > Device types
     "time_left": True,      # "about N h of use left" in the tooltip (history.py)
     "percent_in_icon": False,  # the level as a number in the ring, instead of the pictogram
@@ -1022,6 +1026,9 @@ class App:
             # survive until the controller is turned off and on (#96)
             Item("PlayStation full mode (Bluetooth)", toggle("playstation_full_mode"),
                  checked=lambda it: self.cfg.get("playstation_full_mode", False)),
+            # the same switch for 8BitDo controllers in D-input mode (#101)
+            Item("8BitDo full mode", toggle("eightbitdo_full_mode"),
+                 checked=lambda it: self.cfg.get("eightbitdo_full_mode", False)),
             Item("Device types", Menu(provider_items)),
             Item("Device pictogram", toggle("badges"),
                  checked=lambda it: self.cfg["badges"]),
@@ -1366,6 +1373,9 @@ class App:
         lines.append("PlayStation full mode over Bluetooth: "
                      + ("on (the app switches the controller)" if self.cfg.get("playstation_full_mode")
                         else "off (listen only)"))
+        lines.append("8BitDo full mode: "
+                     + ("on (the app switches the controller)" if self.cfg.get("eightbitdo_full_mode")
+                        else "off (listen only)"))
         for p in self.providers + ([self.bt] if self.cfg["bluetooth"] else []):
             if p.name not in disabled:
                 lines += p.diagnostics()
@@ -1398,6 +1408,8 @@ class App:
                 continue          # turned off in Preferences > Device types: not opened at all
             if isinstance(p, PlayStationProvider):
                 p.switch_bluetooth = bool(self.cfg.get("playstation_full_mode", False))
+            if isinstance(p, EightBitDoProvider):
+                p.switch = bool(self.cfg.get("eightbitdo_full_mode", False))
             try:
                 found = p.poll()
             except Exception:
@@ -1862,6 +1874,8 @@ def probe():
     for p in app.providers + [app.bt]:
         if isinstance(p, PlayStationProvider):
             p.switch_bluetooth = bool(app.cfg.get("playstation_full_mode", False))
+        if isinstance(p, EightBitDoProvider):
+            p.switch = bool(app.cfg.get("eightbitdo_full_mode", False))
         res += p.poll()
         print("\n".join(p.diagnostics()))
     print("\n=== Summary ===")

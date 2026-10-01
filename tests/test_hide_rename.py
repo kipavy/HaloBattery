@@ -275,7 +275,7 @@ class MenuLayoutTests(HideRenameTestCase):
         self.assertEqual(texts, ["Poll interval", "Low battery alert", "Alert when fully charged",
                                  "Estimated time left", "Quiet while gaming",
                                  "Windows Bluetooth devices", "PlayStation full mode (Bluetooth)",
-                                 "Device types",
+                                 "8BitDo full mode", "Device types",
                                  "Device pictogram", "Percentage in the icon", "Charging animation",
                                  "Icon colour", "Status file for other apps",
                                  "Start with Windows", "Check for updates"])

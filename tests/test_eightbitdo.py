@@ -95,6 +95,20 @@ class FakeBus:
         return FakeDevice
 
 
+class SwitchablePad(FakePad):
+    """Silent (idle, ordinary mode) until the enable feature report is read, then it
+    streams the enhanced report."""
+
+    def __init__(self, rid, battery):
+        super().__init__([])
+        self.after = [enhanced(rid, battery)]
+
+    def next(self):
+        if ("get_feature", E.ENABLE_FEATURE) in self.writes:
+            self.reports = self.after
+        return super().next()
+
+
 def entry(path, pid=0x6006, serial="e417d8aabbcc"):
     return {"product_id": pid, "interface_number": -1, "usage_page": 0x0001, "usage": 0x0005,
             "path": path, "product_string": "8BitDo Pro 2", "serial_number": serial}
@@ -175,6 +189,29 @@ class ProviderTest(unittest.TestCase):
     def test_unknown_pid_is_skipped(self):
         out = self.poll([entry(BT_PATH, pid=0x6012)], {BT_PATH: FakePad([enhanced()])})
         self.assertEqual(out, [])
+
+    def test_full_mode_switches_an_idle_controller(self):
+        pad = SwitchablePad(0x01, 0x80 | 55)
+        self.provider.switch = True
+        out = self.poll([entry(BT_PATH)], {BT_PATH: pad})
+        self.assertEqual((out[0].level, out[0].charging), (55, True))
+        self.assertEqual(pad.writes, [("get_feature", E.ENABLE_FEATURE)])
+        self.assertIn("full mode: sent feature", "\n".join(self.provider.diagnostics()))
+
+    def test_full_mode_leaves_an_already_switched_controller_alone(self):
+        pad = FakePad([enhanced(0x01, 0x4B)])
+        self.provider.switch = True
+        out = self.poll([entry(BT_PATH)], {BT_PATH: pad})
+        self.assertEqual(out[0].level, 75)
+        self.assertEqual(pad.writes, [])
+
+    def test_full_mode_without_an_answer_shows_no_level(self):
+        start = self.clock.now
+        pad = FakePad([])
+        self.provider.switch = True
+        out = self.poll([entry(BT_PATH)], {BT_PATH: pad})
+        self.assertIsNone(out[0].level)
+        self.assertLessEqual(self.clock.now - start, E.BUDGET + 0.01)
 
     def test_unopenable_controller_still_shows_without_level(self):
         out = self.poll([entry(BT_PATH)], {})
